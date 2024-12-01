@@ -1,8 +1,93 @@
-### 研究亮点
-- **AI宏基因组挖矿**: 利用AI技术显著扩展了全球RNA病毒的多样性。
-- **深度学习模型**: 开发了集成序列和结构信息的深度学习模型LucaProt。
-- **大规模鉴定**: 鉴定出161,979个潜在RNA病毒种类和180个超群。
-- **广泛分布**: RNA病毒在全球极端环境中普遍存在。
+```python
+from pathlib import Path
+import warnings
 
-### 摘要
-针对现有宏基因组工具难以识别高度分化的RNA病毒的问题，我们开发了名为LucaProt的深度学习算法，用于在来自全球多样生态系统的10,487个元转录组中发现高度分化的RNA依赖性RNA聚合酶（RdRP）序列。LucaProt结合序列和预测结构信息，实现了RdRP序列的准确检测。通过这种方法，我们鉴定了161,979种潜在RNA病毒和180个RNA病毒超群，包括许多先前研究不足的群体，以及具有异常长度（长达47,250个核苷酸）和基因组复杂性的RNA病毒基因组。部分新发现的RNA病毒通过RT-PCR和RNA/DNA测序得到确认。这些新发现的RNA病毒存在于多种环境中，包括空气、温泉和热液喷口，不同生态系统中的病毒多样性和丰度有显著差异。本研究推进了病毒发现，突显了病毒圈的规模，并提供了计算工具以更好地记录全球RNA病毒组。
+import scanpy as sc
+import scib
+import numpy as np
+import sys
+
+import scgpt as scg
+import matplotlib.pyplot as plt
+import anndata
+
+plt.style.context('default')
+warnings.simplefilter("ignore", ResourceWarning)
+
+model_dir = Path("./scGPT_human")
+
+def scib_eval(adata, batch_key, cell_type_key, embed_key):
+    results = scib.metrics.metrics(
+        adata,
+        adata_int=adata,
+        batch_key=batch_key,
+        label_key=cell_type_key,
+        embed=embed_key,
+        isolated_labels_asw_=False,
+        silhouette_=True,
+        hvg_score_=False,
+        graph_conn_=True,
+        pcr_=True,
+        isolated_labels_f1_=False,
+        trajectory_=False,
+        nmi_=True,  # use the clustering, bias to the best matching
+        ari_=True,  # use the clustering, bias to the best matching
+        cell_cycle_=False,
+        kBET_=False,  # kBET return nan sometimes, need to examine
+        ilisi_=False,
+        clisi_=False,
+    )
+    result_dict = results[0].to_dict()
+    
+    # compute avgBIO metrics
+    result_dict["avg_bio"] = np.mean(
+        [
+            result_dict["NMI_cluster/label"],
+            result_dict["ARI_cluster/label"],
+            result_dict["ASW_label"],
+        ]
+    )
+    
+    # compute avgBATCH metrics
+    result_dict["avg_batch"] = np.mean(
+        [
+            result_dict["graph_conn"],
+            result_dict["ASW_label/batch"],
+        ]
+    )
+    
+    result_dict = {k: v for k, v in result_dict.items() if not np.isnan(v)}
+    
+    return result_dict
+
+smaple_data_path = 'Kim2020_Lung.h5ad'
+adata = sc.read_h5ad(smaple_data_path)
+
+gene_col = "gene_name"
+cell_type_key = "cell_type"
+batch_key = "sample"
+N_HVG = 3000
+
+celltype_id_labels = adata.obs[cell_type_key].astype("category").cat.codes.values
+adata = adata[celltype_id_labels >= 0]
+
+org_adata = adata.copy()
+
+# highly variable genes
+sc.pp.highly_variable_genes(adata, n_top_genes=N_HVG, flavor='seurat_v3')
+adata = adata[:, adata.var['highly_variable']]
+
+embed_adata = scg.tasks.embed_data(
+    adata,
+    model_dir,
+    gene_col=gene_col,
+    batch_size=64,
+)
+
+sc.pp.neighbors(embed_adata, use_rep="X_scGPT")
+sc.tl.umap(embed_adata)
+sc.pl.umap(embed_adata, 
+           color=[cell_type_key, batch_key], 
+           frameon=False, 
+           wspace=0.4, 
+           title=["scGPT zero-shot: cell type", "scGPT zero-shot: batch label"])
